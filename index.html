@@ -7,6 +7,7 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="theme-color" content="#f6b79a">
 <link rel="icon" href="data:,">
+<script>if(new URLSearchParams(location.search).get("mode")==="explore")location.replace("./explore.html"+location.search);</script>
 <title>전망순례 · 샘플 플레이</title>
 <style>
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
@@ -110,6 +111,7 @@ h2{margin:0;font-size:clamp(22px,5vw,30px);color:#7a4fb8}
       <h1>전망순례</h1>
       <p class="sub" id="mapSub" style="margin:4px 0 10px">샘플 플레이 · 5분 버티기</p>
       <div class="qrow" style="margin:0 0 12px"><span>맵 선택</span><button data-map="namyang">창원 남양동</button><button data-map="meadow">바람초원</button></div>
+      <div class="qrow" style="margin:0 0 12px"><span>모드</span><button class="sel" style="background:#8a63d2;color:#fff">뱀서(생존)</button><button id="bExplore" onclick="location.href='./explore.html'">🚶 탐험 모드 · 남양동 (NEW)</button></div>
       <p class="sub">한 손으로 <b>이동</b>만 하세요.<br>공격은 <b>자동</b>이에요.<br>레벨업마다 카드를 한 장 고르면 더 강해져요.</p>
       <div class="qrow" style="margin:14px 0 4px"><span>풀 밀도</span>
         <button data-q="0">높음</button><button data-q="1">보통</button><button data-q="2">낮음</button></div>
