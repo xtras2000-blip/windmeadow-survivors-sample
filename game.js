@@ -1,9 +1,11 @@
 // 전망순례 · 샘플 플레이 — three.js (vendored r187). 모든 에셋은 코드로 생성.
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.187.0/build/three.module.js';
+import { loadNamyang } from './namyang.js';
 THREE.ColorManagement.enabled = false;
 
 const $ = id => document.getElementById(id);
 const Q = new URLSearchParams(location.search);
+const MAP = Q.get('map') === 'meadow' ? 'meadow' : 'namyang';
 const isTouch = matchMedia('(pointer:coarse)').matches || navigator.maxTouchPoints > 0;
 const rnd = (a = 1, b) => b === undefined ? Math.random() * a : a + Math.random() * (b - a);
 const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
@@ -41,10 +43,11 @@ const PAL = [
   { t: 1.0, hor: [0.80, 0.55, 0.72], mid: [0.48, 0.40, 0.72], top: [0.18, 0.22, 0.50], sun: [0.80, 0.70, 0.96], sky: [0.78, 0.76, 0.96], gnd: [0.44, 0.44, 0.82], el: 0.10 },
 ];
 const U = {
-  uPlayer: { value: new THREE.Vector3() }, uTime: { value: 0 },
+  uPlayer: { value: new THREE.Vector3() }, uTime: { value: 0 }, uCloud: { value: 1 },
   uFogColor: { value: new THREE.Color() }, uFogDen: { value: 0.0085 },
   uSkyL: { value: new THREE.Vector3() }, uGndL: { value: new THREE.Vector3() },
   uSunDir: { value: new THREE.Vector3(-0.45, 0.4, -0.8).normalize() }, uSunCol: { value: new THREE.Vector3() },
+  uMask: { value: null }, uMapB: { value: new THREE.Vector4() }, uPlay: { value: new THREE.Vector4(-1e5, -1e5, 1e5, 1e5) },
   uHorizon: { value: new THREE.Vector3() }, uMid: { value: new THREE.Vector3() }, uTop: { value: new THREE.Vector3() },
 };
 const hemi = new THREE.HemisphereLight(0xffffff, 0xffffff, Math.PI);
@@ -77,7 +80,7 @@ scene.fog = new THREE.FogExp2(0xffffff, U.uFogDen.value);
 
 // ───────────────────────── GLSL 공통 ─────────────────────────
 const COMMON = `
-uniform vec3 uPlayer; uniform float uTime; uniform vec3 uFogColor; uniform float uFogDen;
+uniform vec3 uPlayer; uniform float uTime; uniform float uCloud; uniform vec3 uFogColor; uniform float uFogDen;
 uniform vec3 uSkyL; uniform vec3 uGndL; uniform vec3 uSunDir; uniform vec3 uSunCol;
 float hash(vec2 p){ p=fract(p*vec2(123.34,456.21)); p+=dot(p,p+45.32); return fract(p.x*p.y); }
 float vnoise(vec2 p){ vec2 i=floor(p), f=fract(p); f=f*f*(3.0-2.0*f);
@@ -94,7 +97,7 @@ vec3 meadowTop(vec2 p, float v){
 vec3 cloudTint(vec2 p){
   float s=vnoise(p*0.03+vec2(uTime*0.55,uTime*0.18))*0.65+vnoise(p*0.07-vec2(uTime*0.3,0.0))*0.35;
   float sh=smoothstep(0.52,0.78,s);
-  return mix(vec3(1.0), vec3(0.66,0.64,0.88), sh*0.75);
+  return mix(vec3(1.0), vec3(0.66,0.64,0.88), sh*0.75*uCloud);
 }
 vec3 shade(vec3 col, vec3 n){
   float h=n.y*0.5+0.5;
@@ -103,6 +106,8 @@ vec3 shade(vec3 col, vec3 n){
   return col*(amb+uSunCol*t);
 }
 float fogAmt(float d){ return 1.0-exp(-pow(uFogDen*d,2.0)); }
+uniform vec4 uPlay;
+${MAP === 'meadow' ? 'float dryAt(vec2 p){ return smoothstep(4.4,5.6,streamD(p)); }' : 'uniform sampler2D uMask; uniform vec4 uMapB; float dryAt(vec2 p){ vec2 uv=(p-uMapB.xy)/uMapB.zw; if(uv.x<0.0||uv.y<0.0||uv.x>1.0||uv.y>1.0) return 0.0; return texture2D(uMask,uv).r; }'}
 `;
 function mat(vs, fs, extra = {}) {
   return new THREE.ShaderMaterial({ uniforms: { ...U, ...extra }, vertexShader: COMMON + vs, fragmentShader: COMMON + fs, fog: false });
@@ -131,6 +136,8 @@ const skyMat = new THREE.ShaderMaterial({
 const sky = new THREE.Mesh(new THREE.SphereGeometry(500, 24, 14), skyMat);
 sky.frustumCulled = false; sky.renderOrder = -10; scene.add(sky);
 
+let NY = null;
+if (MAP === 'meadow') {
 const groundMat = mat(
   `varying vec3 vWP; void main(){ vec4 w=modelMatrix*vec4(position,1.0); vWP=w.xyz; gl_Position=projectionMatrix*viewMatrix*w; }`,
   `varying vec3 vWP;
@@ -161,6 +168,12 @@ const groundMat = mat(
   }`);
 const ground = new THREE.Mesh(new THREE.PlaneGeometry(900, 900).rotateX(-Math.PI / 2), groundMat);
 ground.frustumCulled = false; scene.add(ground);
+} else {
+  try {
+    NY = await loadNamyang(THREE, { scene, mat, U, COMMON, isTouch, clamp, lerp });
+    U.uFogDen.value = 0.0052; scene.fog.density = 0.0052;
+  } catch (e) { fatal('남양동 지도를 불러오지 못했어요: ' + e.message); throw e; }
+}
 
 // ───────────────────────── 정적 인스턴스 소품 ─────────────────────────
 function instGeo(base, n, size, scaleRange, extraAttr) {
@@ -191,7 +204,7 @@ void main(){
   vec2 wp=uPlayer.xz+mod(aInst.xy-uPlayer.xz+hs,uSize)-hs;
   float d=length(wp-uPlayer.xz);
   float fade=1.0-smoothstep(uSize*0.36,uSize*0.49,d);
-  float dry=smoothstep(4.4,5.6,streamD(wp));
+  float dry=dryAt(wp);
   float sc=aInst.z*fade*dry;
   float h=position.y;
   float ca=cos(aInst.w), sa=sin(aInst.w);
@@ -238,7 +251,7 @@ void main(){
   vec2 wp=uPlayer.xz+mod(aInst.xy-uPlayer.xz+hs,uSize)-hs;
   float d=length(wp-uPlayer.xz);
   float fade=1.0-smoothstep(uSize*0.33,uSize*0.49,d);
-  float dry=smoothstep(4.4,5.6,streamD(wp));
+  float dry=dryAt(wp);
   float clump=smoothstep(0.50,0.62,vnoise(wp*0.11+7.0));
   float sc=aInst.z*fade*dry*clump;
   float h=position.y;
@@ -320,6 +333,7 @@ void main(){
 }`;
 function propMat(size, tall, waterR) { return mat(PROP_VS, FS_SIMPLE, { uSize: { value: size }, uTall: { value: tall }, uWaterR: { value: waterR } }); }
 
+if (MAP === 'meadow') {
 // 나무 (동글동글 지브리풍)
 {
   const parts = [];
@@ -357,6 +371,7 @@ function ruinGeo(kind) {
 }
 addMesh(instGeo(ruinGeo(0), 4, 150, [0.9, 1.3]), propMat(150, 1, 8.0));
 addMesh(instGeo(ruinGeo(1), 5, 150, [0.9, 1.3]), propMat(150, 1, 8.0));
+}
 
 function setGrassQuality(i) {
   gq = i; const c = GRASS[i].c;
@@ -462,7 +477,7 @@ const ET = [
   { hp: 2.5, sp: 3.5, r: 0.32, dps: 7, xp: 1, s: 0.7, col: [0.74, 0.64, 0.97] },
   { hp: 340, sp: 1.7, r: 1.8, dps: 30, xp: 60, s: 4.0, col: [1.0, 0.76, 0.42] },
 ];
-const EF = ['x', 'z', 'vx', 'vz', 'hp', 'ph', 'flash', 'leafCd', 'age', 'sv', 'type', 'dead'];
+const EF = ['x', 'z', 'vx', 'vz', 'hp', 'ph', 'flash', 'leafCd', 'age', 'sv', 'type', 'dead', 'stk'];
 const E = { n: 0 };
 for (const f of EF) E[f] = f === 'type' || f === 'dead' ? new Uint8Array(CAP + 4) : new Float32Array(CAP + 4);
 const G = { n: 0, x: new Float32Array(GEM_MAX), z: new Float32Array(GEM_MAX), v: new Float32Array(GEM_MAX), mag: new Uint8Array(GEM_MAX), ph: new Float32Array(GEM_MAX), sp: new Float32Array(GEM_MAX) };
@@ -471,7 +486,7 @@ const PF = { n: 0, x: new Float32Array(PUF_MAX), y: new Float32Array(PUF_MAX), z
 const NUMS = [];
 let S = 'menu';
 let P, T, kills, bossAlive, bossIdx, siegeNext, spawnAcc, shake, hurtT, invul, camT = new THREE.Vector3(), camLook = new THREE.Vector3(), camPitch = 24, camDistCur = 27, pending = 0, sndOn = true;
-let cdSlash, cdPetal, leafAng;
+let cdSlash, cdPetal, leafAng, navT = 0, camYaw = 0, OVERVIEW = null;
 const input = { x: 0, y: 0 }, keys = {};
 let spawnR = 28;
 
@@ -481,7 +496,8 @@ function resetGame() {
   T = 0; kills = 0; bossAlive = false; siegeNext = 35; spawnAcc = 0; shake = 0; hurtT = 0; invul = 0; pending = 0;
   cdSlash = 0.6; cdPetal = 0.5; leafAng = 0;
   E.n = 0; G.n = 0; PT.n = 0; PF.n = 0; NUMS.length = 0;
-  camT.set(0, 0, 0);
+  if (NY) { P.x = NY.start[0]; P.z = NY.start[1]; NY.navBuild(P.x, P.z); navT = 0.2; }
+  camT.set(P.x, 0, P.z);
   $('bossbar').style.display = 'none';
 }
 function needFor(l) { return Math.round(4 + l * 4.2 + l * l * 0.55); }
@@ -491,7 +507,7 @@ function spawnEnemy(type, x, z) {
   if (E.n >= CAP) return -1;
   const i = E.n++, t = ET[type];
   E.x[i] = x; E.z[i] = z; E.vx[i] = 0; E.vz[i] = 0; E.type[i] = type; E.dead[i] = 0;
-  E.hp[i] = type === 3 ? t.hp : t.hp * (1 + T / 110); E.ph[i] = rnd(TAU); E.sv[i] = rnd(0.82, 1.2); E.flash[i] = 0; E.leafCd[i] = 0; E.age[i] = 0;
+  E.hp[i] = type === 3 ? t.hp : t.hp * (1 + T / 110); E.ph[i] = rnd(TAU); E.sv[i] = rnd(0.82, 1.2); E.flash[i] = 0; E.leafCd[i] = 0; E.age[i] = 0; E.stk[i] = 0;
   return i;
 }
 function pickType() {
@@ -501,11 +517,18 @@ function pickType() {
   if (T > RUN_SEC * 0.2 && r < 0.6) return 1;
   return 0;
 }
-function spawnOne() { const a = rnd(TAU), R = spawnR + rnd(-1, 4); spawnEnemy(pickType(), P.x + Math.cos(a) * R, P.z + Math.sin(a) * R); }
+function spawnOne() {
+  if (NY) { const q = NY.pickRing(P.x, P.z, spawnR); if (q) spawnEnemy(pickType(), q[0], q[1]); return; }
+  const a = rnd(TAU), R = spawnR + rnd(-1, 4); spawnEnemy(pickType(), P.x + Math.cos(a) * R, P.z + Math.sin(a) * R);
+}
 function siege() {
   const n = Math.min(26, CAP - E.n - 4); if (n <= 0) return;
   const R = 14;
-  for (let k = 0; k < n; k++) { const a = (k / n) * TAU; spawnEnemy(k % 3 === 2 ? 1 : 0, P.x + Math.cos(a) * R, P.z + Math.sin(a) * R); }
+  for (let k = 0; k < n; k++) {
+    const a = (k / n) * TAU;
+    if (NY) { const q = NY.pickAt(P.x, P.z, a, R); if (q) spawnEnemy(k % 3 === 2 ? 1 : 0, q[0], q[1]); continue; }
+    spawnEnemy(k % 3 === 2 ? 1 : 0, P.x + Math.cos(a) * R, P.z + Math.sin(a) * R);
+  }
   banner('포위 웨이브!');
 }
 function targetCount() { return Math.min(CAP - 12, Math.round(7 + T * 0.5 + (T / RUN_SEC) * 12)); }
@@ -677,6 +700,7 @@ const fmt = s => Math.floor(s / 60) + ':' + String(Math.floor(s % 60)).padStart(
 // ── 적 업데이트 ──
 const gridHead = new Int32Array(1024), gridNext = new Int32Array(CAP + 4);
 const gh = (cx, cz) => (Math.imul(cx, 92837111) ^ Math.imul(cz, 689287499)) & 1023;
+function respawnE(i) { const q = NY.pickRing(P.x, P.z, spawnR); if (q) { E.x[i] = q[0]; E.z[i] = q[1]; E.age[i] = 0; E.stk[i] = 0; E.vx[i] = E.vz[i] = 0; } else if (E.type[i] !== 3) E.dead[i] = 1; }
 function updateEnemies(dt) {
   gridHead.fill(-1);
   for (let i = 0; i < E.n; i++) { const h = gh(Math.floor(E.x[i] / 2), Math.floor(E.z[i] / 2)); gridNext[i] = gridHead[h]; gridHead[h] = i; }
@@ -685,13 +709,22 @@ function updateEnemies(dt) {
     if (E.dead[i]) continue;
     const t = ET[E.type[i]];
     const dx = P.x - E.x[i], dz = P.z - E.z[i], d = Math.hypot(dx, dz) + 0.001;
+    const ox = E.x[i], oz = E.z[i];
+    let ux = dx / d, uz = dz / d;
+    if (NY) {
+      if (!NY.walk(ox, oz)) { respawnE(i); continue; }
+      const nd = NY.navDir(ox, oz, P.x, P.z);
+      if (nd) { ux = nd[0]; uz = nd[1]; E.stk[i] = Math.max(0, E.stk[i] - dt); }
+      else { E.stk[i] += dt; if (E.stk[i] > 1.4) { respawnE(i); continue; } ux = 0; uz = 0; }
+    }
     const boost = 1 + clamp((d - 18) / 10, 0, 1.6);
     const sp = t.sp * E.sv[i] * boost * (1 + T / RUN_SEC * 0.25);
     E.age[i] += dt; E.ph[i] += dt * (6 + sp);
     E.leafCd[i] -= dt; E.flash[i] = Math.max(0, E.flash[i] - dt * 8);
-    const wob = Math.sin(E.ph[i] * 0.4) * 0.35; let mx = (dx / d - dz / d * wob) * sp + E.vx[i], mz = (dz / d + dx / d * wob) * sp + E.vz[i];
+    const wob = Math.sin(E.ph[i] * 0.4) * 0.35; let mx = (ux - uz * wob) * sp + E.vx[i], mz = (uz + ux * wob) * sp + E.vz[i];
     E.vx[i] *= Math.exp(-7 * dt); E.vz[i] *= Math.exp(-7 * dt);
-    E.x[i] += mx * dt; E.z[i] += mz * dt;
+    if (NY) { let nx = ox + mx * dt, nz = oz + mz * dt; if (!NY.walk(nx, oz)) { nx = ox; E.vx[i] = 0; } if (!NY.walk(nx, nz)) { nz = oz; E.vz[i] = 0; } E.x[i] = nx; E.z[i] = nz; }
+    else { E.x[i] += mx * dt; E.z[i] += mz * dt; }
     if (d < t.r + 0.38) touch += t.dps * (1 + T / RUN_SEC * 0.7);
     // 겹침 방지
     const cx = Math.floor(E.x[i] / 2), cz = Math.floor(E.z[i] / 2);
@@ -702,7 +735,8 @@ function updateEnemies(dt) {
         if (dd2 < rr * rr && dd2 > 1e-6) { const dd = Math.sqrt(dd2), push = (rr - dd) * 0.5 * Math.min(1, dt * 14); const nx = ox / dd, nz = oz / dd; const wi = E.type[i] === 3 ? 0.1 : 1, wj = E.type[j] === 3 ? 0.1 : 1; E.x[i] += nx * push * wi; E.z[i] += nz * push * wi; E.x[j] -= nx * push * wj; E.z[j] -= nz * push * wj; }
       }
     }
-    if (d > 48 && E.type[i] !== 3) { const a = rnd(TAU); E.x[i] = P.x + Math.cos(a) * spawnR; E.z[i] = P.z + Math.sin(a) * spawnR; E.age[i] = 0; }
+    if (NY) { if (d > 62 && E.type[i] !== 3) respawnE(i); if (!NY.walk(E.x[i], E.z[i])) { E.x[i] = ox; E.z[i] = oz; } }
+    else if (d > 48 && E.type[i] !== 3) { const a = rnd(TAU); E.x[i] = P.x + Math.cos(a) * spawnR; E.z[i] = P.z + Math.sin(a) * spawnR; E.age[i] = 0; }
   }
   if (touch > 0) hurtPlayer(touch, dt);
   // 정리
@@ -744,8 +778,9 @@ function update(dt) {
   let m = Math.hypot(ix, iy); const dead = 0.1;
   if (m > dead) {
     const k = Math.min(1, (m - dead) / (1 - dead)); let sp = P.speed * k;
-    if (streamD(P.x, P.z) < 3.6) sp *= 0.8;
-    P.x += ix / m * sp * dt; P.z += iy / m * sp * dt; P.face = Math.atan2(ix, iy); P.bob += dt * 11 * k;
+    if (NY ? NY.slow(P.x, P.z) : streamD(P.x, P.z) < 3.6) sp *= 0.8;
+    if (NY) { const nx = P.x + ix / m * sp * dt, nz = P.z + iy / m * sp * dt; if (NY.walkR(nx, P.z)) P.x = nx; if (NY.walkR(P.x, nz)) P.z = nz; }
+    else { P.x += ix / m * sp * dt; P.z += iy / m * sp * dt; } P.face = Math.atan2(ix, iy); P.bob += dt * 11 * k;
   }
   // 스폰
   const tc = targetCount();
@@ -753,11 +788,13 @@ function update(dt) {
   while (spawnAcc >= 1) { spawnAcc -= 1; if (E.n < tc) spawnOne(); }
   if (E.n < tc * 0.5) spawnOne();
   if (T >= siegeNext) { siege(); siegeNext += 40; }
-  if (!bossAlive && T >= BOSS_AT && T < BOSS_AT + 1 && !bossIdx) { const a = rnd(TAU); bossIdx = 1; if (spawnEnemy(3, P.x + Math.cos(a) * 20, P.z + Math.sin(a) * 20) >= 0) { bossAlive = true; $('bossbar').style.display = 'block'; banner('황혼 젤리 등장!'); } }
+  if (NY) { if (!bossAlive && T >= BOSS_AT && !bossIdx) { const q = NY.pickRing(P.x, P.z, 20, 40); if (q && spawnEnemy(3, q[0], q[1]) >= 0) { bossIdx = 1; bossAlive = true; $('bossbar').style.display = 'block'; banner('황혼 젤리 등장!'); } } }
+  else if (!bossAlive && T >= BOSS_AT && T < BOSS_AT + 1 && !bossIdx) { const a = rnd(TAU); bossIdx = 1; if (spawnEnemy(3, P.x + Math.cos(a) * 20, P.z + Math.sin(a) * 20) >= 0) { bossAlive = true; $('bossbar').style.display = 'block'; banner('황혼 젤리 등장!'); } }
   // 무기
   cdSlash -= dt; if (cdSlash <= 0) { fireSlash(); cdSlash = slashStats().cd; }
   if (P.w.petal) { cdPetal -= dt; if (cdPetal <= 0) { firePetals(); cdPetal = 1.25 * Math.pow(0.93, P.w.petal); } }
   updatePetals(dt); updateLeaves(dt);
+  if (NY) { navT -= dt; if (navT <= 0) { NY.navBuild(P.x, P.z); navT = 0.2; } }
   updateEnemies(dt);
   updateGems(dt);
 }
@@ -776,14 +813,25 @@ function updateCamera(dt, realDt) {
   const v = VIEWS[viewIdx];
   const calm = S === 'menu' || S === 'over';
   const kk = 1 - Math.exp(-(calm ? 1.2 : 1.6) * realDt);
-  camPitch = lerp(camPitch, calm ? 24 : v.pitch, kk);
-  camDistCur = lerp(camDistCur, (calm ? 27 : v.dist) * viewFactor(camera.aspect), kk);
+  const cPitch = NY ? 36 : 24, cDist = NY ? 64 : 27;
+  camPitch = lerp(camPitch, calm ? cPitch : v.pitch, kk);
+  camDistCur = lerp(camDistCur, (calm ? cDist : v.dist) * viewFactor(camera.aspect), kk);
   const tgt = tmpA.set(P.x, 0, P.z);
   camT.lerp(tgt, 1 - Math.exp(-9 * realDt));
+  if (NY && !OVERVIEW) {
+    if (calm) camYaw += realDt * 0.10; else { camYaw = ((camYaw + Math.PI) % TAU + TAU) % TAU - Math.PI; camYaw *= Math.exp(-3 * realDt); }
+    const pr_ = camPitch * Math.PI / 180, r0 = calm ? 52 : camDistCur * Math.cos(pr_) * 1.05 + 5;
+    U.uCutR.value.set(r0, r0 + (calm ? 30 : 16));
+  }
   const p = camPitch * Math.PI / 180;
   const sx = shake > 0 ? rnd(-1, 1) * shake : 0, sz = shake > 0 ? rnd(-1, 1) * shake : 0; shake = Math.max(0, shake - realDt * 0.6);
-  camera.position.set(camT.x + sx, Math.sin(p) * camDistCur + 0.5, camT.z + Math.cos(p) * camDistCur + sz);
-  camera.lookAt(camT.x, 0.5, camT.z - 2.2);
+  const sy_ = Math.sin(camYaw), cy_ = Math.cos(camYaw);
+  if (OVERVIEW) {
+    const o = OVERVIEW, pp = o.pitch * Math.PI / 180;
+    camera.position.set(o.x, Math.sin(pp) * o.h, o.z + Math.cos(pp) * o.h); camera.lookAt(o.x, 0, o.z); sky.position.copy(camera.position); return;
+  }
+  camera.position.set(camT.x + sy_ * Math.cos(p) * camDistCur + sx, Math.sin(p) * camDistCur + 0.5, camT.z + cy_ * Math.cos(p) * camDistCur + sz);
+  camera.lookAt(camT.x - sy_ * 2.2, 0.5, camT.z - cy_ * 2.2);
   sky.position.copy(camera.position);
 }
 function renderDynamic(realDt, now) {
@@ -866,6 +914,7 @@ function drawFx(realDt) {
     fx.fillStyle = '#fff'; fx.fillText(n.txt, sx, sy);
   }
   fx.globalAlpha = 1;
+  if (NY && !OVERVIEW) NY.drawLabels(fx, camera, P, fxc.width, fxc.height);
 }
 let hudCache = {};
 function updateHud() {
@@ -876,6 +925,7 @@ function updateHud() {
   set('lv', P.lvl, v => $('lvTxt').textContent = 'Lv ' + v);
   set('tm', Math.ceil(RUN_SEC - T), v => $('timer').textContent = fmt(Math.max(0, v)));
   $('hurt').style.opacity = hurtT; hurtT = Math.max(0, hurtT - 0.02);
+  if (NY) NY.drawMini(P, E);
 }
 
 // ═════════════════════════ 입력 / UI ═════════════════════════
@@ -911,6 +961,8 @@ $('bView').onclick = () => { viewIdx = 1 - viewIdx; $('bView').textContent = '�
 $('bSnd').onclick = () => { sndOn = !sndOn; $('bSnd').textContent = sndOn ? '🔊' : '🔇'; };
 if (!document.documentElement.requestFullscreen && !document.documentElement.webkitRequestFullscreen) $('bFs').style.display = 'none';
 $('bFs').onclick = () => { const d = document, el = d.documentElement; if (d.fullscreenElement || d.webkitFullscreenElement) (d.exitFullscreen || d.webkitExitFullscreen).call(d); else { const p = (el.requestFullscreen || el.webkitRequestFullscreen).call(el); if (p && p.then) p.then(() => { try { screen.orientation.lock('landscape').catch(() => {}); } catch (e) {} }).catch(() => {}); } };
+document.querySelectorAll('[data-map]').forEach(b => { b.classList.toggle('sel', b.dataset.map === MAP); b.onclick = () => { if (b.dataset.map === MAP) return; const u = new URL(location.href); u.searchParams.set('map', b.dataset.map); location.href = u.toString(); }; });
+if (NY) { $('mapSub').textContent = '창원시 성산구 남양동 · 5분 버티기'; $('attr').style.display = 'block'; $('mmwrap').style.display = 'block'; document.title = '전망순례 · 창원 남양동'; } else { $('mapSub').textContent = '바람초원 · 5분 버티기'; }
 document.querySelectorAll('[data-q]').forEach(b => b.onclick = () => setGrassQuality(+b.dataset.q));
 function startGame() {
   if (!actx) { try { actx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) {} }
@@ -918,7 +970,7 @@ function startGame() {
   resetGame(); bossIdx = 0;
   $('menu').classList.add('hidden'); $('over').classList.add('hidden'); $('cards').classList.add('hidden'); $('pause').classList.add('hidden');
   S = 'play'; $('hud').style.visibility = 'visible'; if (isTouch) { stick.classList.add('hint'); stick.classList.add('on'); }
-  hudCache = {}; banner('바람이 불어와요 🍃');
+  hudCache = {}; banner(NY ? '창원 남양동에 바람이 불어와요 🍃' : '바람이 불어와요 🍃');
 }
 $('bStart').onclick = startGame; $('bRestart').onclick = startGame;
 
@@ -936,14 +988,14 @@ function botInput() {
 setInterval(() => { if (BOT && S === 'card') { const b = $('cardrow').children[(Math.random() * 3) | 0]; b && b.click(); } if (BOT && S === 'over') startGame(); }, 250);
 
 // ═════════════════════════ 루프 ═════════════════════════
-$('hud').style.visibility = 'hidden'; resetGame(); bossIdx = 0; setGrassQuality(gq); resize(); window.addEventListener('resize', resize); window.addEventListener('orientationchange', () => setTimeout(resize, 200));
+$('hud').style.visibility = 'hidden'; resetGame(); bossIdx = 0; setGrassQuality(gq); resize(); if (NY) { camPitch = 36; camDistCur = 64 * viewFactor(camera.aspect); } window.addEventListener('resize', resize); window.addEventListener('orientationchange', () => setTimeout(resize, 200));
 applyTimeOfDay(0.08);
 let last = performance.now(), emaMs = 16, slowFor = 0, simSpeed = Q.has('speed') ? +Q.get('speed') : 1, menuT = 0;
 renderer.setAnimationLoop(now => {
   const raw = (now - last) / 1000; last = now; const realDt = Math.min(raw, 0.05);
   U.uTime.value = now / 1000;
   if (S === 'menu' || S === 'over') {
-    menuT += realDt; const a = menuT * 0.35; P.x += Math.cos(a) * 2.2 * realDt; P.z += Math.sin(a) * 2.2 * realDt; P.face = a + Math.PI / 2; P.bob += realDt * 6;
+    menuT += realDt; const a = menuT * 0.35; if (!NY) { P.x += Math.cos(a) * 2.2 * realDt; P.z += Math.sin(a) * 2.2 * realDt; } P.face = a + Math.PI / 2; P.bob += realDt * 6;
   }
   if (S === 'play') { const steps = Math.max(1, Math.round(simSpeed)); for (let k = 0; k < steps; k++) { update(realDt * (simSpeed / steps)); if (S !== 'play') break; } }
   if (S === 'play' || S === 'card' || S === 'pause') applyTimeOfDay(T / RUN_SEC);
@@ -965,4 +1017,4 @@ function simHeadless(sec, dt = 1 / 30) {
   }
   return { S, T, hp: P.hp, lvl: P.lvl, kills, n: E.n, log };
 }
-window.__game = { camera, sim: simHeadless, get S() { return S; }, get P() { return P; }, get T() { return T; }, E, G, setT: v => { T = v; }, siege, spawnOne, spawnEnemy, get kills() { return kills; }, startGame, chooseCard, fmt, renderer, setPitchView: i => { viewIdx = i; resize(); }, levelUp, debugFill: n => { for (let i = 0; i < n; i++) spawnOne(); }, giveW: (k, l) => { P.w[k] = l; } };
+window.__game = { NY, U, overview: (on, x = 0, z = 0, h = 1500, pitch = 89, far = 6000) => { if (on) { OVERVIEW = { x, z, h, pitch }; camera.far = far; camera.near = 2; U.uFogDen.value = 0; scene.fog.density = 0; U.uCutR.value.set(0, 0.001); U.uCloud.value = 0; } else { OVERVIEW = null; U.uCloud.value = 1; camera.far = 900; camera.near = 0.5; U.uFogDen.value = 0.0052; scene.fog.density = 0.0052; } camera.updateProjectionMatrix(); }, setPlayer: (x, z) => { P.x = x; P.z = z; camT.set(x, 0, z); if (NY) NY.navBuild(x, z); }, input, camera, sim: simHeadless, get S() { return S; }, get P() { return P; }, get T() { return T; }, E, G, setT: v => { T = v; }, siege, spawnOne, spawnEnemy, get kills() { return kills; }, startGame, chooseCard, fmt, renderer, setPitchView: i => { viewIdx = i; resize(); }, levelUp, debugFill: n => { for (let i = 0; i < n; i++) spawnOne(); }, giveW: (k, l) => { P.w[k] = l; } };
